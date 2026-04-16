@@ -1,0 +1,16 @@
+id: rust-analyzer-lsp
+name: Rust Language Server
+enabled: true
+binary: rust-analyzer
+check_command: "rust-analyzer --version"
+
+install:
+  default:
+    command: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && . $HOME/.cargo/env && rustup component add rust-analyzer"
+    env_path: "$HOME/.cargo/bin"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    # plugin: defaults to id (rust-analyzer-lsp)
+    scope: user

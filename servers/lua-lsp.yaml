@@ -1,0 +1,27 @@
+id: lua-lsp
+name: Lua Language Server
+enabled: true
+binary: lua-language-server
+check_command: "lua-language-server --version"
+
+install:
+  default:
+    # No universal Linux package. On distros without snapd, download
+    # a release tarball from
+    # https://github.com/LuaLS/lua-language-server/releases and add
+    # its bin/ directory to PATH.
+    requires: null
+    command: null
+  darwin:
+    requires: brew
+    command: "brew install lua-language-server"
+  linux:
+    # Requires snapd; not present on Fedora, Arch, NixOS, Alpine, Void.
+    requires: snap
+    command: "snap install lua-language-server --classic"
+    needs_sudo: true
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

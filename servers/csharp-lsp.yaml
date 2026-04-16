@@ -1,0 +1,18 @@
+id: csharp-lsp
+name: C# Language Server
+enabled: true
+binary: csharp-ls
+check_command: "csharp-ls --version"
+
+install:
+  # csharp-ls is a .NET global tool; install the same way on every OS.
+  # Requires the .NET SDK (dotnet) to be installed first.
+  default:
+    requires: dotnet
+    command: "dotnet tool install --global csharp-ls"
+    env_path: "$HOME/.dotnet/tools"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

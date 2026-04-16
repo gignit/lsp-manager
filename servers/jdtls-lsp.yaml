@@ -1,0 +1,22 @@
+id: jdtls-lsp
+name: Java Language Server (Eclipse JDT.LS)
+enabled: true
+binary: jdtls
+check_command: "jdtls --version"
+
+install:
+  default:
+    # jdtls is not packaged in apt/dnf/pacman. On Linux, install via a
+    # JDT.LS manager like Mason (Neovim) or fetch the tarball from
+    # https://download.eclipse.org/jdtls/ manually.
+    requires: null
+    command: null
+  darwin:
+    # Requires Homebrew. Brings in openjdk + python as dependencies.
+    requires: brew
+    command: "brew install jdtls"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

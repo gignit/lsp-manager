@@ -1,0 +1,35 @@
+id: tailwindcss-lsp
+name: Tailwind CSS Language Server
+enabled: true
+binary: tailwindcss-language-server
+# tailwindcss-language-server does not support --version (throws a JS
+# error). Use `which` to verify the binary is reachable on PATH.
+check_command: "which tailwindcss-language-server"
+
+install:
+  default:
+    requires: npm
+    command: "npm install -g @tailwindcss/language-server"
+  darwin:
+    requires: brew
+    command: "command -v npm >/dev/null || brew install node; npm install -g @tailwindcss/language-server"
+  linux:
+    command: "apt-get install -y nodejs npm && npm install -g @tailwindcss/language-server"
+    needs_sudo: true
+
+clients:
+  claude:
+    # No official marketplace plugin -- inject LSP config directly
+    lsp_config:
+      command: tailwindcss-language-server
+      args:
+        - "--stdio"
+      extensionToLanguage:
+        .css: css
+        .html: html
+        .tsx: typescriptreact
+        .jsx: javascriptreact
+        .ts: typescript
+        .js: javascript
+        .vue: vue
+        .svelte: svelte

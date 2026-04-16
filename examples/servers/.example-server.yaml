@@ -1,0 +1,38 @@
+# Example server definition for a custom LSP server.
+# Copy this file to servers/<plugin-name>.yaml and modify as needed.
+# The filename stem must match the id field (e.g. my-lang-lsp.yaml -> id: my-lang-lsp).
+# Files starting with "." in the servers/ directory are ignored by lsp-manager.
+
+id: my-lang-lsp
+name: My Language Server
+enabled: true
+binary: my-lang-server
+check_command: "my-lang-server --version"
+
+install:
+  default:
+    requires: node
+    command: "npm install -g my-lang-server"
+  darwin:
+    command: "brew install my-lang-server"
+  linux:
+    command: "npm install -g my-lang-server"
+    needs_sudo: true
+
+clients:
+  claude:
+    # Option 1: Official Claude Code marketplace plugin.
+    # marketplace defaults to claude-plugins-official if omitted.
+    # plugin defaults to id (my-lang-lsp) if omitted.
+    marketplace: claude-plugins-official
+    plugin: my-lang-lsp
+    scope: user
+
+    # Option 2: No official plugin -- inject LSP config directly.
+    # lsp-manager will generate a local plugin with an absolute-path command.
+    # lsp_config:
+    #   command: my-lang-server
+    #   args:
+    #     - "--stdio"
+    #   extensionToLanguage:
+    #     .mylang: mylanguage

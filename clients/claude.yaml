@@ -1,0 +1,16 @@
+id: claude
+name: Claude Code
+enabled: true
+binary: claude
+detect_command: "claude --version"
+
+plugins:
+  install_command: "claude plugin install {plugin} --scope {scope}"
+  enable_command: "claude plugin enable {plugin}"
+  uninstall_command: "claude plugin uninstall {plugin}"
+  list_command: "claude plugin list"
+  default_scope: user
+
+rules:
+  path: "~/.claude/rules/"
+  source: "rules/lsp-navigation.md"

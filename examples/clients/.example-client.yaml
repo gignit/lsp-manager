@@ -1,0 +1,18 @@
+# Example client definition for an AI coding tool.
+# Copy this file to clients/<name>.yaml and modify as needed.
+# Files starting with "." in the clients/ directory are ignored.
+
+id: my-editor
+name: My Editor
+enabled: true
+binary: my-editor
+detect_command: "my-editor --version"
+
+plugins:
+  install_command: "my-editor plugin install {plugin}"
+  list_command: "my-editor plugin list"
+  default_scope: user
+
+rules:
+  path: ".my-editor/rules/"
+  source: "rules/lsp-navigation.md"

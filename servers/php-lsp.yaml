@@ -1,0 +1,22 @@
+id: php-lsp
+name: PHP Language Server (Intelephense)
+enabled: true
+binary: intelephense
+check_command: "intelephense --version"
+
+install:
+  # Intelephense ships as an npm package. Requires Node.js.
+  # Note: Intelephense is premium software; some advanced features
+  # require a paid license key. Core completions work without one.
+  default:
+    requires: npm
+    command: "npm install -g intelephense"
+  darwin:
+    # Install Node via Homebrew if missing, then the npm package.
+    requires: brew
+    command: "command -v npm >/dev/null || brew install node; npm install -g intelephense"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

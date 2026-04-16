@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""lsp-manager -- Language Server Protocol management utility.
+
+Installs LSP server binaries, configures AI coding tool integrations
+(plugins and rules), and verifies everything works.
+
+Usage:
+    lsp-manager init [--dry-run] [-y|--yes] [--no-sudo]
+    lsp-manager list
+    lsp-manager status
+    lsp-manager doctor
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+# PyYAML is required -- fail early with a clear message
+try:
+    import yaml  # noqa: F401
+except ImportError:
+    print("error: PyYAML is required but not installed.", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  Install it with one of:", file=sys.stderr)
+    print("    python3 -m pip install --user pyyaml", file=sys.stderr)
+    print("    pipx install pyyaml        # isolated install", file=sys.stderr)
+    print("    apt install python3-yaml   # Debian/Ubuntu system package", file=sys.stderr)
+    print("    pacman -S python-yaml      # Arch Linux system package", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("  On macOS, install Python from Homebrew (brew install python), then:", file=sys.stderr)
+    print("    python3 -m pip install --user pyyaml", file=sys.stderr)
+    sys.exit(1)
+
+# Resolve base directory (where this script lives, or the install dir)
+SCRIPT_DIR = Path(os.path.realpath(__file__)).parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from lib import detect, engine, listing, rules, settings
+
+
+def get_base_dir() -> Path:
+    """Get the lsp-manager base directory (where servers/, clients/, etc. live)."""
+    # When installed via Makefile, files are in ~/.local/share/lsp-manager/
+    # When running from source, they're in the script's directory
+    return SCRIPT_DIR
+
+
+def _load_pack(base_dir: Path, pack_name: str) -> list[str] | None:
+    """Load a plugin pack by name from packs.yaml. Returns list of plugin ids or None."""
+    import yaml
+    packs_path = base_dir / 'packs.yaml'
+    if not packs_path.exists():
+        return None
+    try:
+        with open(packs_path, encoding='utf-8') as f:
+            packs = yaml.safe_load(f)
+        pack = packs.get(pack_name)
+        if pack:
+            return pack.get('plugins', [])
+    except Exception:
+        pass
+    return None
+
+
+def cmd_init(args):
+    """Full setup: install all enabled server binaries and configure clients."""
+    base_dir = get_base_dir()
+    project_dir = Path.cwd()
+    dry_run = args.dry_run
+    auto_yes = getattr(args, 'auto_yes', False)
+    no_sudo = getattr(args, 'no_sudo', False)
+    do_all = getattr(args, 'all', False)
+    plugins_arg = getattr(args, 'plugins', None)
+    pack_arg = getattr(args, 'pack', None)
+
+    # Default to --pack standard when no selection flag is provided.
+    pack_defaulted = False
+    if not do_all and not plugins_arg and not pack_arg:
+        pack_arg = 'standard'
+        pack_defaulted = True
+
+    # Resolve the set of plugin ids to install
+    allowed_ids: set[str] | None = None
+    if plugins_arg:
+        allowed_ids = {p.strip() for p in plugins_arg.split(',')}
+    elif pack_arg:
+        pack_plugins = _load_pack(base_dir, pack_arg)
+        if pack_plugins is None:
+            print(f"error: pack '{pack_arg}' not found in packs.yaml")
+            return 1
+        allowed_ids = set(pack_plugins)
+
+    # --- Preflight: required external tools ---
+    # init is where environment validation happens. lsp-manager shells
+    # out to the claude CLI to register marketplaces and plugins, so it
+    # must be present before we change anything on disk.
+    if not detect.is_available('claude'):
+        print("error: claude CLI is not installed.", file=sys.stderr)
+        print("  install it with:", file=sys.stderr)
+        print("    npm install -g @anthropic-ai/claude-code", file=sys.stderr)
+        return 1
+
+    # Load config and create default if missing
+    config = settings.load_config()
+    settings.save_default_config()
+    resolve_method = config.get('path_resolve_method', 'hard')
+
+    print("> lsp-manager init")
+    if dry_run:
+        print("  (dry run -- no changes will be made)")
+    if do_all:
+        print("  selection: all servers")
+    elif plugins_arg:
+        print(f"  selection: plugins {plugins_arg}")
+    elif pack_arg:
+        suffix = ' (default)' if pack_defaulted else ''
+        print(f"  selection: pack '{pack_arg}'{suffix}")
+    print(f"  path_resolve_method: {resolve_method}")
+    print()
+
+    # --- Phase 0: Update marketplace data ---
+    if not dry_run:
+        print("  Updating marketplace data...")
+        code, _, stderr = detect.run_command(
+            'claude plugin marketplace update claude-plugins-official',
+            timeout=30,
+        )
+        if code == 0:
+            print("    [ok] claude-plugins-official")
+        else:
+            print("    [warn] marketplace update failed (using cached data)")
+        print()
+
+    # --- Phase 1: Server binaries ---
+    print("  Servers:")
+    all_server_defs = engine.load_definitions(base_dir / 'servers')
+    if not all_server_defs:
+        print("    No server definitions found")
+        return 1
+
+    # Filter to only the requested plugins
+    if allowed_ids is not None:
+        server_defs = [s for s in all_server_defs if s.get('id') in allowed_ids]
+        unknown = allowed_ids - {s.get('id') for s in all_server_defs}
+        for uid in sorted(unknown):
+            print(f"    [warn] unknown plugin id: {uid}")
+    else:
+        server_defs = all_server_defs
+
+    server_results = []
+    no_tty_error = False
+    for sdef in server_defs:
+        sr = engine.process_server(
+            sdef, dry_run=dry_run, config=config,
+            auto_yes=auto_yes, no_sudo=no_sudo,
+        )
+        server_results.append(sr)
+
+        if sr.skipped:
+            print(f"    [skip] {sr.name} ({sr.skip_reason})")
+        elif sr.error:
+            print(f"    [fail] {sr.name}: {sr.error}")
+            if 'no TTY available' in (sr.error or ''):
+                no_tty_error = True
+            if sr.manual_commands:
+                for cmd in sr.manual_commands:
+                    print(f"           {cmd}")
+        elif sr.install_method == 'dry-run':
+            print(f"    [would install] {sr.name}")
+        elif sr.binary_was_installed:
+            version = f" ({sr.binary_version.split()[0] if sr.binary_version else 'installed'})"
+            method = f" via {sr.install_method}" if sr.install_method else ''
+            print(f"    [install] {sr.name}{version}{method}")
+        elif sr.binary_available:
+            version = ''
+            if sr.binary_version:
+                ver_line = sr.binary_version.split('\n')[0].strip()
+                if len(ver_line) > 60:
+                    ver_line = ver_line[:60]
+                version = f" ({ver_line})"
+            print(f"    [ok] {sr.name}{version}")
+
+    print()
+
+    if no_tty_error:
+        print("  error: one or more servers require sudo but no TTY is available.")
+        print("         Re-run with --yes to approve sudo automatically.")
+        print("         Re-run with --no-sudo to skip servers that require elevated privileges.")
+        return 1
+
+    # --- Phase 2: Client integrations ---
+    print("  Clients:")
+    client_defs = engine.load_definitions(base_dir / 'clients')
+    if not client_defs:
+        print("    No client definitions found")
+        return 0
+
+    client_results = []
+    for cdef in client_defs:
+        cr = engine.process_client(
+            cdef, server_defs, server_results,
+            base_dir, project_dir, dry_run=dry_run, config=config,
+        )
+        client_results.append(cr)
+
+        if cr.skipped:
+            print(f"    [{cr.name}] skipped ({cr.skip_reason})")
+            continue
+
+        print(f"    [{cr.name}]")
+
+        # Build lookup of server_id -> manifest state for local plugins.
+        # lsp_configs entries: "gopls -> local plugin (/path/to/gopls)"
+        # lsp_configs_skipped entries: "gopls (local plugin)"
+        manifest_written: dict[str, str] = {}
+        for c in cr.lsp_configs:
+            sid = c.split(' ')[0]
+            cmd = c.split('(')[-1].rstrip(')')
+            manifest_written[sid] = cmd
+        manifest_skipped: set[str] = set()
+        for c in cr.lsp_configs_skipped:
+            manifest_skipped.add(c.split(' ')[0])
+
+        from lib import claude_plugin as _cp
+
+        def _format_plugin(qualified_id: str, label: str) -> str:
+            """Format a plugin output line, prefixing local ones with 'local:'."""
+            if f'@{_cp.MARKETPLACE_NAME}' not in qualified_id:
+                return f"      [{label}] {qualified_id}"
+            pname = qualified_id.split('@')[0]
+            # Match server_id by finding whose plugin_name_for equals pname.
+            sid = next(
+                (s for s in list(manifest_written) + list(manifest_skipped)
+                 if pname.startswith(s)),
+                None,
+            )
+            if sid and sid in manifest_written:
+                return (f"      [{label}] local: {qualified_id} "
+                        f"(manifest updated: {manifest_written[sid]})")
+            if sid and sid in manifest_skipped:
+                return f"      [{label}] local: {qualified_id} (manifest up to date)"
+            return f"      [{label}] local: {qualified_id}"
+
+        # Plugins
+        for p in cr.plugins_installed:
+            print(_format_plugin(p, 'install'))
+        for p in cr.plugins_skipped:
+            print(_format_plugin(p, 'ok'))
+        for p in cr.plugins_failed:
+            print(f"      [fail] {p}")
+        for p in cr.plugins_uninstalled:
+            print(f"      [uninstall] {p}")
+
+        # Symlinks (soft path)
+        for s in cr.symlinks_created:
+            print(f"      [link] {s}")
+
+        # Rules
+        if cr.rules_written:
+            print(f"      [write] rules file")
+        elif cr.rules_skipped:
+            print(f"      [ok] rules file (up to date)")
+
+        if cr.error:
+            print(f"      [error] {cr.error}")
+
+    # --- Path warnings ---
+    all_warnings = []
+    for cr in client_results:
+        all_warnings.extend(cr.path_warnings)
+    if all_warnings:
+        print()
+        print("  Warnings:")
+        for w in all_warnings:
+            print(f"    [warn] {w}")
+    print()
+
+    # Summary
+    ok_count = sum(1 for sr in server_results if sr.ok)
+    skip_count = sum(1 for sr in server_results if sr.skipped)
+    fail_count = sum(1 for sr in server_results if sr.error)
+    print(f"  Summary: {ok_count} servers ready, {skip_count} skipped, {fail_count} failed")
+    print()
+    return 0
+
+
+def cmd_list(args):
+    """List all LSP plugins -- configured servers and marketplace availability."""
+    base_dir = get_base_dir()
+    filter_enabled = getattr(args, 'enabled', False)
+    filter_disabled = getattr(args, 'disabled', False)
+    filter_failed = getattr(args, 'failed', False)
+
+    # --- Gather data independently ---
+    server_defs = engine.load_definitions(base_dir / 'servers')
+    detect.ensure_server_paths_in_path(server_defs)
+
+    server_entries = listing.get_server_entries(server_defs)
+    installed_plugins = listing.get_installed_plugins()
+    marketplace_plugins = listing.get_all_marketplace_lsp_plugins()
+
+    # --- Merge into unified plugin views ---
+    views = listing.build_plugin_views(server_entries, installed_plugins, marketplace_plugins)
+
+    # --- Apply filters ---
+    if filter_enabled:
+        views = [v for v in views if v.overall_status == 'enabled']
+    elif filter_disabled:
+        views = [v for v in views if v.overall_status == 'disabled']
+    elif filter_failed:
+        views = [v for v in views if v.health == 'failed']
+
+    print("> LSP Plugins")
+    print()
+
+    if not views:
+        print("  (none)")
+        print()
+        return 0
+
+    for view in views:
+        overall = view.overall_status
+        health = view.health
+
+        # Status badges
+        status_badge = f'[{overall}]'
+        health_badge = f'[{health}]'
+
+        # Plugin name line
+        name_str = view.plugin_name
+        if view.server:
+            name_str = f'{view.server.name} ({view.plugin_name})'
+        print(f"  {status_badge} {health_badge}  {name_str}")
+
+        # Binary line (only if we have a server definition)
+        if view.server and view.server.enabled:
+            se = view.server
+            if se.binary_available and se.binary_version:
+                print(f"    binary:  {se.binary}  {se.binary_version}")
+            elif se.binary_available:
+                print(f"    binary:  {se.binary}  installed")
+            else:
+                print(f"    binary:  {se.binary}  not installed")
+
+        # Marketplace lines
+        active = view.active_marketplace
+        for ms in view.marketplace_statuses:
+            # If enabled somewhere, only show the active marketplace
+            if overall == 'enabled' and ms != active:
+                continue
+            error_str = f'  error: {ms.error}' if ms.error else ''
+            if ms.status not in ('enabled', 'not installed'):
+                status_str = f'  [{ms.status}]'
+            else:
+                status_str = ''
+            print(f"    plugin:  {view.plugin_name}@{ms.marketplace}{status_str}{error_str}")
+
+        print()
+
+
+def cmd_status(args):
+    """Show status for current project."""
+    base_dir = get_base_dir()
+
+    print("> LSP Status")
+    print()
+
+    # Check servers
+    server_defs = engine.load_definitions(base_dir / 'servers')
+    detect.ensure_server_paths_in_path(server_defs)
+    ok = []
+    missing = []
+    disabled = []
+    for sdef in server_defs:
+        name = sdef.get('name', sdef.get('id', '?'))
+        binary = sdef.get('binary', '')
+        if not sdef.get('enabled', True):
+            disabled.append(name)
+        elif detect.is_available(binary):
+            ok.append(name)
+        else:
+            missing.append(name)
+
+    print(f"  Servers: {len(ok)} ready, {len(missing)} missing, {len(disabled)} disabled")
+    for name in ok:
+        print(f"    [ok] {name}")
+    for name in missing:
+        print(f"    [missing] {name}")
+    for name in disabled:
+        print(f"    [disabled] {name}")
+    print()
+
+    # Check clients
+    client_defs = engine.load_definitions(base_dir / 'clients')
+    for cdef in client_defs:
+        name = cdef.get('name', cdef.get('id', '?'))
+        binary = cdef.get('binary', '')
+        if not cdef.get('enabled', True):
+            print(f"  {name}: disabled")
+        elif detect.is_available(binary):
+            print(f"  {name}: available")
+        else:
+            print(f"  {name}: not installed")
+    print()
+
+    return 0
+
+
+def cmd_doctor(args):
+    """Health check: verify binaries, plugins, and rules."""
+    base_dir = get_base_dir()
+    project_dir = Path.cwd()
+    issues = []
+
+    print("> lsp-manager doctor")
+    print()
+
+    # Check servers
+    server_defs = engine.load_definitions(base_dir / 'servers')
+    detect.ensure_server_paths_in_path(server_defs)
+    for sdef in server_defs:
+        if not sdef.get('enabled', True):
+            continue
+        name = sdef.get('name', sdef.get('id', '?'))
+        binary = sdef.get('binary', '')
+        check_cmd = sdef.get('check_command', '')
+
+        if not detect.is_available(binary):
+            issues.append(f"Server {name}: binary '{binary}' not in PATH")
+            print(f"  [fail] {name}: '{binary}' not found")
+            continue
+
+        if check_cmd:
+            version = detect.check_binary_version(check_cmd)
+            if version:
+                print(f"  [ok] {name}: {version.split(chr(10))[0].strip()[:60]}")
+            else:
+                issues.append(f"Server {name}: check command failed")
+                print(f"  [warn] {name}: binary found but check command failed")
+        else:
+            print(f"  [ok] {name}: binary found")
+
+    print()
+
+    # Check clients
+    client_defs = engine.load_definitions(base_dir / 'clients')
+    for cdef in client_defs:
+        if not cdef.get('enabled', True):
+            continue
+        name = cdef.get('name', cdef.get('id', '?'))
+        binary = cdef.get('binary', '')
+        if not detect.is_available(binary):
+            print(f"  [skip] {name}: not installed")
+            continue
+
+        print(f"  [ok] {name}: available")
+
+        # Check rules
+        rules_config = cdef.get('rules', {})
+        if rules_config:
+            rules_path_str = rules_config.get('path', '')
+            source = rules_config.get('source', '')
+            if rules_path_str and source:
+                source_path = base_dir / source
+                target_dir = Path(detect.expand_env_path(rules_path_str))
+                if not target_dir.is_absolute():
+                    target_dir = project_dir / target_dir
+                target_file = target_dir / source_path.name
+                if target_file.exists():
+                    print(f"    [ok] rules: {target_file}")
+                else:
+                    issues.append(f"Client {name}: rules file missing at {target_file}")
+                    print(f"    [missing] rules: {target_file}")
+
+    print()
+    if issues:
+        print(f"  {len(issues)} issue(s) found. Run 'lsp-manager init' to fix.")
+    else:
+        print("  All checks passed.")
+    print()
+    return 1 if issues else 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog='lsp-manager',
+        description='Language Server Protocol management utility',
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # init
+    init_parser = subparsers.add_parser('init', help='Install servers and configure clients')
+    init_parser.add_argument('--dry-run', action='store_true', help='Show what would be done without executing')
+    sudo_group = init_parser.add_mutually_exclusive_group()
+    sudo_group.add_argument(
+        '-y', '--yes',
+        action='store_true',
+        dest='auto_yes',
+        help='Automatically approve sudo when required (non-interactive)',
+    )
+    sudo_group.add_argument(
+        '--no-sudo',
+        action='store_true',
+        dest='no_sudo',
+        help='Skip any server that would require sudo instead of prompting',
+    )
+    plugin_group = init_parser.add_mutually_exclusive_group()
+    plugin_group.add_argument(
+        '--all',
+        action='store_true',
+        help='Install all servers defined in servers/',
+    )
+    plugin_group.add_argument(
+        '--plugins',
+        metavar='NAME,...',
+        help='Comma-separated list of plugin ids to install (e.g. gopls-lsp,pyright-lsp)',
+    )
+    plugin_group.add_argument(
+        '--pack',
+        metavar='NAME',
+        help='Install a named plugin pack (default: standard)',
+    )
+
+    # list
+    list_parser = subparsers.add_parser('list', help='List all LSP plugins -- configured and available in marketplace')
+    list_filter = list_parser.add_mutually_exclusive_group()
+    list_filter.add_argument(
+        '--enabled', action='store_true',
+        help='Show only enabled plugins',
+    )
+    list_filter.add_argument(
+        '--disabled', action='store_true',
+        help='Show only disabled plugins',
+    )
+    list_filter.add_argument(
+        '--failed', action='store_true',
+        help='Show only failed plugins',
+    )
+
+    # status
+    subparsers.add_parser('status', help='Show status for current project')
+
+    # doctor
+    subparsers.add_parser('doctor', help='Health check: verify binaries, plugins, and rules')
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    commands = {
+        'init': cmd_init,
+        'list': cmd_list,
+        'status': cmd_status,
+        'doctor': cmd_doctor,
+    }
+
+    return commands[args.command](args)
+
+
+if __name__ == '__main__':
+    sys.exit(main())

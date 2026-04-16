@@ -1,0 +1,22 @@
+id: kotlin-lsp
+name: Kotlin Language Server
+enabled: true
+binary: kotlin-lsp
+check_command: "kotlin-lsp --version"
+
+install:
+  default:
+    # JetBrains' official Kotlin LSP. Pre-alpha; JVM projects only.
+    # Linux install is a manual tarball from
+    # https://github.com/Kotlin/kotlin-lsp/releases (see that project's
+    # README for the symlink-to-PATH step).
+    requires: null
+    command: null
+  darwin:
+    requires: brew
+    command: "brew install JetBrains/utils/kotlin-lsp"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

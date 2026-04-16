@@ -1,0 +1,32 @@
+# Plugin packs for lsp-manager init --pack <name>
+# Each pack is a named list of server ids to install.
+
+standard:
+  description: "Common web and systems languages"
+  plugins:
+    - gopls-lsp
+    - typescript-lsp
+    - pyright-lsp
+    - rust-analyzer-lsp
+    - clangd-lsp
+    - tailwindcss-lsp
+
+web:
+  description: "Front-end and web-oriented languages"
+  plugins:
+    - typescript-lsp
+    - tailwindcss-lsp
+    - php-lsp
+
+jvm:
+  description: "JVM languages (Java, Kotlin)"
+  plugins:
+    - jdtls-lsp
+    - kotlin-lsp
+
+systems:
+  description: "Compiled systems languages (C/C++, Rust, Go)"
+  plugins:
+    - clangd-lsp
+    - rust-analyzer-lsp
+    - gopls-lsp

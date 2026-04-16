@@ -1,0 +1,23 @@
+id: ruby-lsp
+name: Ruby Language Server
+enabled: true
+binary: ruby-lsp
+check_command: "ruby-lsp --version"
+
+install:
+  default:
+    # Requires a working Ruby with gem (rbenv, chruby, asdf, Homebrew's
+    # ruby, or a system ruby -- the bundled macOS ruby does NOT work
+    # because gem install to it requires sudo and places binaries in
+    # a location Claude cannot find).
+    requires: gem
+    command: "gem install --user-install ruby-lsp"
+    # `gem environment gemdir`/bin is the per-user gem bin for whatever
+    # Ruby is active. Resolves correctly on macOS (Homebrew or rbenv)
+    # and Linux regardless of Ruby version.
+    env_path: "$(gem environment gemdir)/bin"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

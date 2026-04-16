@@ -1,0 +1,23 @@
+id: typescript-lsp
+name: TypeScript/JavaScript Language Server
+enabled: true
+binary: typescript-language-server
+check_command: "typescript-language-server --version"
+
+install:
+  default:
+    requires: npm
+    command: "npm install -g typescript-language-server typescript"
+  darwin:
+    # Install Node via Homebrew if missing, then the npm packages.
+    requires: brew
+    command: "command -v npm >/dev/null || brew install node; npm install -g typescript-language-server typescript"
+  linux:
+    command: "apt-get install -y nodejs npm && npm install -g typescript-language-server typescript"
+    needs_sudo: true
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    # plugin: defaults to id (typescript-lsp)
+    scope: user

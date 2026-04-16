@@ -1,0 +1,26 @@
+id: clangd-lsp
+name: C/C++ Language Server
+enabled: true
+binary: clangd
+check_command: "clangd --version"
+
+install:
+  default:
+    requires: null
+    command: null
+  darwin:
+    # Requires Homebrew. llvm is keg-only, so clangd lives under the
+    # formula prefix. $(brew --prefix llvm) resolves to the right path on
+    # both Intel (/usr/local/opt/llvm) and Apple Silicon (/opt/homebrew/opt/llvm).
+    requires: brew
+    command: "brew install llvm"
+    env_path: "$(brew --prefix llvm)/bin"
+  linux:
+    command: "apt-get install -y clangd"
+    needs_sudo: true
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    # plugin: defaults to id (clangd-lsp)
+    scope: user

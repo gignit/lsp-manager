@@ -1,0 +1,25 @@
+id: swift-lsp
+name: Swift Language Server (SourceKit-LSP)
+enabled: true
+binary: sourcekit-lsp
+check_command: "sourcekit-lsp --version"
+
+install:
+  default:
+    # sourcekit-lsp ships with the Swift toolchain. On macOS with Xcode
+    # installed, it's already available via `xcrun`. On Linux, install
+    # Swift from https://www.swift.org/install/linux/ -- no package
+    # manager provides it universally.
+    requires: null
+    command: null
+  darwin:
+    # `brew install swift` pulls Apple's Swift toolchain including
+    # sourcekit-lsp. If Xcode is already installed, this step is a
+    # no-op but safe.
+    requires: brew
+    command: "brew install swift"
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    scope: user

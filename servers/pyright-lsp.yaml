@@ -1,0 +1,22 @@
+id: pyright-lsp
+name: Python Language Server (Pyright)
+enabled: true
+binary: pyright-langserver
+check_command: "pyright --version"
+
+install:
+  default:
+    requires: npm
+    command: "npm install -g pyright"
+  darwin:
+    requires: brew
+    command: "command -v npm >/dev/null || brew install node; npm install -g pyright"
+  linux:
+    command: "apt-get install -y nodejs npm && npm install -g pyright"
+    needs_sudo: true
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    # plugin: defaults to id (pyright-lsp)
+    scope: user

@@ -1,0 +1,25 @@
+id: gopls-lsp
+name: Go Language Server
+enabled: true
+binary: gopls
+check_command: "gopls version"
+
+install:
+  default:
+    requires: go
+    command: "go install golang.org/x/tools/gopls@latest"
+    env_path: "$HOME/go/bin"
+  darwin:
+    requires: brew
+    command: "command -v go >/dev/null || brew install go; go install golang.org/x/tools/gopls@latest"
+    env_path: "$HOME/go/bin"
+  linux:
+    command: "apt-get install -y golang-go && go install golang.org/x/tools/gopls@latest"
+    env_path: "$HOME/go/bin"
+    needs_sudo: true
+
+clients:
+  claude:
+    marketplace: claude-plugins-official
+    # plugin: defaults to id (gopls-lsp)
+    scope: user
