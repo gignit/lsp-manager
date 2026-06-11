@@ -418,6 +418,15 @@ def cmd_doctor(args):
     print("> lsp-manager doctor")
     print()
 
+    # Plugin names enabled in Claude Code, used to separate "configured
+    # but broken" (an issue) from "never installed" (informational).
+    enabled_plugin_names = set()
+    claude_settings = settings.load_json(
+        Path(os.path.expanduser('~/.claude/settings.json')))
+    for qid, enabled in (claude_settings.get('enabledPlugins') or {}).items():
+        if enabled:
+            enabled_plugin_names.add(qid.split('@', 1)[0])
+
     # Check servers
     server_defs = engine.load_definitions(base_dir / 'servers')
     detect.ensure_server_paths_in_path(server_defs)
@@ -427,19 +436,30 @@ def cmd_doctor(args):
         name = sdef.get('name', sdef.get('id', '?'))
         binary = sdef.get('binary', '')
         check_cmd = sdef.get('check_command', '')
+        cc = sdef.get('clients', {}).get('claude', {})
+        plugin_name = cc.get('plugin') or sdef.get('id', '')
+        configured = plugin_name in enabled_plugin_names
 
         if not detect.is_available(binary):
-            issues.append(f"Server {name}: binary '{binary}' not in PATH")
-            print(f"  [fail] {name}: '{binary}' not found")
+            if configured:
+                issues.append(f"Server {name}: binary '{binary}' not in PATH "
+                              f"but plugin '{plugin_name}' is enabled")
+                print(f"  [fail] {name}: '{binary}' not found "
+                      f"(plugin '{plugin_name}' is enabled)")
+            else:
+                print(f"  [--] {name}: not installed")
             continue
 
         if check_cmd:
             version = detect.check_binary_version(check_cmd)
             if version:
                 print(f"  [ok] {name}: {version.split(chr(10))[0].strip()[:60]}")
-            else:
+            elif configured:
                 issues.append(f"Server {name}: check command failed")
                 print(f"  [warn] {name}: binary found but check command failed")
+            else:
+                print(f"  [--] {name}: binary found but check command failed "
+                      f"(not configured, ignored)")
         else:
             print(f"  [ok] {name}: binary found")
 
@@ -475,13 +495,189 @@ def cmd_doctor(args):
                     issues.append(f"Client {name}: rules file missing at {target_file}")
                     print(f"    [missing] rules: {target_file}")
 
-    print()
+    # ---- Legacy artifacts ---------------------------------------------
+    # Surgical by design: only artifacts lsp-manager itself is known to
+    # have created are considered (provable provenance). Other tools may
+    # install LSP servers and files into the same locations; lsp-manager
+    # is not the authority over anything it didn't create, so unknown
+    # files are never touched.
+    legacy = _find_legacy_artifacts(base_dir, server_defs)
+    if legacy:
+        print()
+        print("  Legacy artifacts (lsp-manager provenance only):")
+        for label, fix_fn in legacy:
+            if args.fix:
+                err = fix_fn()
+                if err:
+                    issues.append(f'legacy cleanup failed: {label}: {err}')
+                    print(f"    [fail]   {label}: {err}")
+                else:
+                    print(f"    [fixed]  {label}")
+            else:
+                print(f"    [legacy] {label}")
+        if not args.fix:
+            print("    Run 'lsp-manager doctor --fix' to clean these up.")
+        print()
+
+    if not legacy:
+        print()
     if issues:
         print(f"  {len(issues)} issue(s) found. Run 'lsp-manager init' to fix.")
     else:
         print("  All checks passed.")
     print()
     return 1 if issues else 0
+
+
+def _find_legacy_artifacts(base_dir, server_defs):
+    """Detect artifacts created by older lsp-manager versions.
+
+    Returns a list of (label, fix_fn) tuples. Each fix_fn performs one
+    targeted cleanup and returns None on success or an error string.
+    Detection requires provable lsp-manager provenance; files this tool
+    cannot prove it created are never offered for cleanup.
+    """
+    from lib import claude_plugin
+
+    legacy = []
+
+    # 1. Generated '@lsp-manager' local plugins whose server now resolves
+    #    cleanly through an upstream marketplace plugin (e.g. tailwindcss
+    #    gained an official plugin, or a PATH issue went away). Migrate:
+    #    install upstream first, retire the local copy only on success.
+    installed = {
+        e.qualified_id: e.status for e in listing.get_installed_plugins()
+    }
+    for sdef in server_defs:
+        if not sdef.get('enabled', True):
+            continue
+        sid = sdef.get('id', '')
+        binary = sdef.get('binary', '')
+        cc = sdef.get('clients', {}).get('claude', {})
+        if not (cc.get('marketplace') or cc.get('plugin')):
+            continue  # lsp_config-only servers legitimately stay local
+        pname = cc.get('plugin') or sid
+        upstream_qid = f"{pname}@{cc.get('marketplace') or 'claude-plugins-official'}"
+        local_qid = f'{pname}@{claude_plugin.MARKETPLACE_NAME}'
+        if upstream_qid == local_qid or local_qid not in installed:
+            continue
+        if detect.check_path_issue(binary, engine.preferred_env_path(sdef)) is not None:
+            continue  # local absolute-path plugin is still required
+
+        def _migrate(local_qid=local_qid, upstream_qid=upstream_qid,
+                     pname=pname, scope=cc.get('scope', 'user')):
+            code, _, stderr = detect.run_command(
+                f'claude plugin install {upstream_qid} --scope {scope}',
+                timeout=60,
+            )
+            if code != 0:
+                return f'install of {upstream_qid} failed: {stderr[:120]}'
+            code, _, stderr = detect.run_command(
+                f'claude plugin uninstall {local_qid}', timeout=30,
+            )
+            if code != 0:
+                return f'uninstall of {local_qid} failed: {stderr[:120]}'
+            claude_plugin.remove_marketplace_entry(pname)
+            claude_plugin.register_marketplace()
+            return None
+
+        legacy.append((
+            f'local plugin {local_qid} superseded by {upstream_qid}',
+            _migrate,
+        ))
+
+    # 2. Old-generation server definitions in the install dir: <x>.yaml
+    #    superseded by <x>-lsp.yaml declaring the same binary. User-added
+    #    definitions (different stem or different binary) are untouched.
+    servers_dir = base_dir / 'servers'
+    for old in sorted(servers_dir.glob('*.yaml')):
+        if old.stem.endswith('-lsp'):
+            continue
+        new = servers_dir / f'{old.stem}-lsp.yaml'
+        if not new.is_file():
+            continue
+        try:
+            old_def = yaml.safe_load(old.read_text(encoding='utf-8')) or {}
+            new_def = yaml.safe_load(new.read_text(encoding='utf-8')) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        if old_def.get('binary') and old_def.get('binary') == new_def.get('binary'):
+            def _rm_old(old=old):
+                old.unlink()
+                return None
+            legacy.append((
+                f'old server definition servers/{old.name} '
+                f'superseded by servers/{new.name}',
+                _rm_old,
+            ))
+
+    # 3. Hook definitions shipped by pre-release versions. Released
+    #    lsp-manager does not manage hooks; only these exact files are
+    #    recognized, anything else under hooks/ stays.
+    hooks_dir = base_dir / 'hooks'
+    known_hooks = ('block-destructive.yaml', 'format-on-save.yaml', '_schema.md')
+    for hname in known_hooks:
+        hfile = hooks_dir / hname
+        if not hfile.is_file():
+            continue
+
+        def _rm_hook(hfile=hfile, hooks_dir=hooks_dir):
+            hfile.unlink()
+            if hooks_dir.is_dir() and not any(hooks_dir.iterdir()):
+                hooks_dir.rmdir()
+            return None
+
+        legacy.append((
+            f'pre-release hook definition hooks/{hname} '
+            f'(hooks are no longer managed)',
+            _rm_hook,
+        ))
+
+    # 4. Hook entries written into ~/.claude/settings.json by pre-release
+    #    versions, identified by the literal 'lsp-manager' signature in
+    #    their command. Unsigned hooks are left alone -- they may be the
+    #    user's own.
+    settings_path = Path(os.path.expanduser('~/.claude/settings.json'))
+    cs = settings.load_json(settings_path)
+    signed_count = sum(
+        1
+        for groups in (cs.get('hooks') or {}).values() if isinstance(groups, list)
+        for g in groups if isinstance(g, dict)
+        for h in g.get('hooks', []) if isinstance(h, dict)
+        if 'lsp-manager' in str(h.get('command', ''))
+    )
+    if signed_count:
+        def _rm_signed_hooks(settings_path=settings_path):
+            data = settings.load_json(settings_path)
+            hooks_cfg = data.get('hooks') or {}
+            for event in list(hooks_cfg.keys()):
+                groups = hooks_cfg[event]
+                if not isinstance(groups, list):
+                    continue
+                for g in groups:
+                    if isinstance(g, dict) and isinstance(g.get('hooks'), list):
+                        g['hooks'] = [
+                            h for h in g['hooks']
+                            if 'lsp-manager' not in str(h.get('command', ''))
+                        ]
+                groups = [
+                    g for g in groups
+                    if not (isinstance(g, dict) and not g.get('hooks'))
+                ]
+                if groups:
+                    hooks_cfg[event] = groups
+                else:
+                    del hooks_cfg[event]
+            settings.save_json(settings_path, data)
+            return None
+
+        legacy.append((
+            f'{signed_count} pre-release lsp-manager hook(s) in '
+            f'~/.claude/settings.json',
+            _rm_signed_hooks,
+        ))
+
+    return legacy
 
 
 def main():
@@ -544,7 +740,12 @@ def main():
     subparsers.add_parser('status', help='Show status for current project')
 
     # doctor
-    subparsers.add_parser('doctor', help='Health check: verify binaries, plugins, and rules')
+    doctor_parser = subparsers.add_parser(
+        'doctor', help='Health check: verify binaries, plugins, and rules')
+    doctor_parser.add_argument(
+        '--fix', action='store_true',
+        help='Surgically clean up legacy artifacts created by older '
+             'lsp-manager versions (never touches files it did not create)')
 
     args = parser.parse_args()
 

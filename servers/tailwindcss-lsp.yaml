@@ -19,7 +19,10 @@ install:
 
 clients:
   claude:
-    # No official marketplace plugin -- inject LSP config directly
+    # No official marketplace plugin (verified against a freshly updated
+    # claude-plugins-official, June 2026) -- inject LSP config directly.
+    # If one appears upstream, switch to `marketplace:` and `doctor --fix`
+    # / `init` will migrate the generated local plugin automatically.
     lsp_config:
       command: tailwindcss-language-server
       args:

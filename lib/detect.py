@@ -172,12 +172,15 @@ def check_path_issue(binary: str, env_path: Optional[str] = None) -> Optional[di
         found = shutil.which(binary, path=_ORIGINAL_PATH)
         if found:
             return None
-        # Not in original PATH -- find it using augmented PATH
+        # Not in original PATH -- find it using augmented PATH.
+        # Report the path as found, not its realpath: locations like
+        # /opt/homebrew/bin/<tool> are stable across package upgrades,
+        # while their symlink targets (Cellar/node_modules) are not.
         actual = which(binary)
         if not actual:
             return None
         return {
-            'correct_path': os.path.realpath(actual),
+            'correct_path': actual,
             'found_path': None,
             'issue': 'not_in_path',
         }
@@ -186,7 +189,11 @@ def check_path_issue(binary: str, env_path: Optional[str] = None) -> Optional[di
     correct = os.path.join(env_path, binary)
     if not os.path.isfile(correct):
         return None
-    correct = os.path.realpath(correct)
+    # Compare canonical paths but report the un-resolved one: paths like
+    # $(brew --prefix llvm)/bin/clangd survive upgrades, their realpath
+    # pins a versioned Cellar directory that dies on the next
+    # `brew upgrade`.
+    correct_canonical = os.path.realpath(correct)
 
     found = shutil.which(binary, path=_ORIGINAL_PATH)
     if found is None:
@@ -197,7 +204,7 @@ def check_path_issue(binary: str, env_path: Optional[str] = None) -> Optional[di
         }
 
     found_real = os.path.realpath(found)
-    if found_real != correct:
+    if found_real != correct_canonical:
         return {
             'correct_path': correct,
             'found_path': found_real,

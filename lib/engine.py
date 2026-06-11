@@ -317,6 +317,19 @@ def process_server(
     return result
 
 
+def preferred_env_path(server_def: dict) -> Optional[str]:
+    """Return the expanded preferred binary directory for a server, if any.
+
+    This is the install config's ``env_path`` for the current platform --
+    the directory a correctly installed binary is expected in (e.g.
+    ``$HOME/go/bin``). Lets doctor evaluate PATH issues the same way
+    init does.
+    """
+    cfg = _resolve_install_config(server_def) or {}
+    env_path = cfg.get('env_path')
+    return detect.expand_env_path(env_path) if env_path else None
+
+
 def _resolve_install_config(server_def: dict) -> Optional[dict]:
     """Resolve OS-specific install config, merging with defaults."""
     install = server_def.get('install', {})
@@ -495,6 +508,9 @@ def _setup_server_integrations(
     upstream_to_remove: list[str] = []
     # Upstream plugins to install normally.
     upstream_to_install: list[tuple[str, dict]] = []
+    # Local '@lsp-manager' plugins to retire once their upstream
+    # replacement is confirmed healthy: (local_qid, upstream_plugin_id).
+    local_retirements: list[tuple[str, str]] = []
 
     for sdef in server_defs:
         server_id = sdef.get('id', '')
@@ -580,6 +596,14 @@ def _setup_server_integrations(
         # -------------------------------------------------------------
         elif plugin_id and not has_path_issue:
             upstream_to_install.append((plugin_id, client_config))
+            # If a previously generated local plugin shadows this server
+            # (an official plugin appeared upstream, or a PATH issue got
+            # resolved), plan to retire the local copy -- but only after
+            # the upstream install is confirmed below, so a failed
+            # upstream install never leaves the server with no plugin.
+            local_qid = claude_plugin.plugin_qualified_id(server_id, plugin_id)
+            if local_qid != plugin_id and local_qid in installed_plugins:
+                local_retirements.append((local_qid, plugin_id))
 
         # -------------------------------------------------------------
         # Case C: inline lsp_config (no upstream plugin)
@@ -590,11 +614,13 @@ def _setup_server_integrations(
             if pi is not None:
                 cfg['command'] = pi['correct_path']
             elif resolve_method == 'hard':
-                # Prefer a realpath-resolved absolute command so the
-                # user-PATH snapshot at install time is captured.
+                # Snapshot an absolute command from the install-time PATH.
+                # Deliberately not realpath-resolved: symlinked locations
+                # like /opt/homebrew/bin/<tool> are stable across package
+                # upgrades, their Cellar/node_modules targets are not.
                 found = detect.which(cfg.get('command') or binary)
                 if found:
-                    cfg['command'] = os.path.realpath(found)
+                    cfg['command'] = found
             # Key the server entry by server_id for readability.
             local_plugin_specs[server_id] = {server_id: cfg}
 
@@ -618,6 +644,21 @@ def _setup_server_integrations(
             code, _, _ = detect.run_command(cmd, timeout=30)
             if code == 0:
                 result.plugins_uninstalled.append(plugin_id)
+
+    # ----- Retire local plugins shadowed by a healthy upstream -----
+    failed_ids = {f.split(':', 1)[0] for f in result.plugins_failed}
+    for local_qid, upstream_pid in local_retirements:
+        if upstream_pid in failed_ids:
+            continue  # upstream install/enable failed -- keep the local plugin
+        if dry_run:
+            result.plugins_uninstalled.append(f'{local_qid} (dry-run)')
+            continue
+        if uninstall_cmd_template:
+            cmd = uninstall_cmd_template.format(plugin=local_qid)
+            code, _, _ = detect.run_command(cmd, timeout=30)
+            if code == 0:
+                result.plugins_uninstalled.append(local_qid)
+                claude_plugin.remove_marketplace_entry(local_qid.rsplit('@', 1)[0])
 
     # ----- Apply local plugin marketplace -----
     if local_plugin_specs:

@@ -35,6 +35,12 @@ RSYNC_EXCLUDE := \
 	--exclude='*.swo' \
 	--exclude='*~'
 
+# NOTE: install only ever copies -- it never deletes from INSTALL_DIR.
+# Other tools may keep state there (and users may add their own server
+# definitions), so this Makefile is not the authority over that
+# directory. Cleanup of artifacts that *lsp-manager itself* created in
+# older versions is handled surgically by `lsp-manager doctor --fix`.
+
 .PHONY: install uninstall
 
 install:
@@ -74,6 +80,10 @@ install:
 	@echo ""
 
 uninstall:
+	@echo "  NOTE: this removes $(INSTALL_DIR), including the local plugin"
+	@echo "        marketplace. Any '@lsp-manager' plugins still enabled in"
+	@echo "        Claude Code will stop working. Remove them first with:"
+	@echo "          claude plugin uninstall <name>@lsp-manager"
 	@rm -f $(BIN_DIR)/lsp-manager
 	@rm -rf $(INSTALL_DIR)
 	@echo "  [ok] lsp-manager uninstalled"

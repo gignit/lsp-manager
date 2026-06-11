@@ -147,6 +147,33 @@ def ensure_marketplace_manifest(
     return True
 
 
+def remove_marketplace_entry(plugin_name: str) -> bool:
+    """Surgically remove one plugin entry from the local marketplace.
+
+    Deletes the named entry from marketplace.json and removes the
+    plugin's stub directory. Everything else is left untouched. Used
+    when an upstream marketplace plugin supersedes a generated local
+    one.
+
+    Returns True if anything changed on disk.
+    """
+    changed = False
+    manifest_path = _marketplace_manifest_path()
+    current = _read_json(manifest_path)
+    if current and isinstance(current.get('plugins'), list):
+        kept = [p for p in current['plugins'] if p.get('name') != plugin_name]
+        if len(kept) != len(current['plugins']):
+            current['plugins'] = kept
+            _write_json(manifest_path, current)
+            changed = True
+
+    stub_dir = _plugin_root(plugin_name)
+    if stub_dir.is_dir():
+        _rmtree(stub_dir)
+        changed = True
+    return changed
+
+
 def ensure_plugin_stub_dir(server_id: str, upstream_plugin_id: Optional[str] = None) -> None:
     """Create the plugin stub directory, copying files from the upstream plugin if available.
 

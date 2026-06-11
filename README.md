@@ -6,8 +6,8 @@ Installs LSP server binaries and wires them into Claude Code automatically -- wi
 lsp-manager init
 ```
 
-MIT-licensed. Tested on Linux. macOS support is implemented but not yet
-widely tested (see [Platforms](#platforms)).
+MIT-licensed. Tested on Linux and macOS (Apple Silicon). Last verified
+against Claude Code 2.1.172 (June 2026).
 
 ## Prerequisites
 
@@ -40,6 +40,12 @@ export PATH="$HOME/.local/bin:$PATH"
 fish_add_path $HOME/.local/bin
 ```
 
+`make install` only ever copies files -- it never deletes anything from
+the install directory, since other tools (and your own server
+definitions) may live there too. Artifacts that older versions of
+lsp-manager itself created are detected by `lsp-manager doctor` and
+cleaned up surgically by `lsp-manager doctor --fix`.
+
 Uninstall with `make uninstall`.
 
 ## Usage
@@ -68,6 +74,10 @@ lsp-manager status
 
 # Health check: verify binaries, plugins, and rules
 lsp-manager doctor
+
+# Same check, plus surgical cleanup of artifacts that older lsp-manager
+# versions created (it never touches files it did not create)
+lsp-manager doctor --fix
 ```
 
 `lsp-manager init` with no selection flag installs the `standard` pack. Pass
@@ -84,7 +94,7 @@ These servers are installed by `lsp-manager init` with no arguments.
 | pyright | Python | `pyright-lsp@claude-plugins-official` |
 | rust-analyzer | Rust | `rust-analyzer-lsp@claude-plugins-official` |
 | clangd | C/C++ | `clangd-lsp@claude-plugins-official` |
-| tailwindcss-language-server | CSS/HTML/JSX | `tailwindcss-lsp@lsp-manager` (local) |
+| tailwindcss-language-server | CSS/HTML/JSX | `tailwindcss-lsp@lsp-manager` (local; no official plugin as of June 2026) |
 
 Pack contents are defined in `packs.yaml`. Additional server definitions ship
 in `servers/` (C#, Java, Kotlin, Lua, PHP, Ruby, Swift) and can be installed
@@ -105,7 +115,7 @@ lsp-manager manages three things:
 | Platform | Status |
 |----------|--------|
 | Linux | Tested on Ubuntu. Most servers use `apt-get` on Linux; distros without `apt` will need to install server prereqs manually before running `lsp-manager init`. |
-| macOS (Intel + Apple Silicon) | Supported. Install commands use Homebrew. If Homebrew is missing, install it first: <https://brew.sh>. Paths that differ between Intel (`/usr/local`) and Apple Silicon (`/opt/homebrew`) are resolved at runtime via `$(brew --prefix ...)`. Not yet tested as widely as Linux -- please open an issue if something breaks. |
+| macOS (Intel + Apple Silicon) | Tested on Apple Silicon. Install commands use Homebrew. If Homebrew is missing, install it first: <https://brew.sh>. Paths that differ between Intel (`/usr/local`) and Apple Silicon (`/opt/homebrew`) are resolved at runtime via `$(brew --prefix ...)`. |
 | Windows | Not supported. |
 
 ## Security
@@ -127,6 +137,13 @@ For each server, the decision:
 | Binary not in PATH + `path_resolve_method: hard` (default) | Generate local plugin with absolute path, replace official |
 | Binary not in PATH + `path_resolve_method: soft` | Use official plugin + create symlink in `bin_dir` |
 | No official plugin exists (e.g. Tailwind CSS) | Always generate local plugin |
+
+Local plugins record an absolute path to the binary as found in PATH at
+install time (e.g. `/opt/homebrew/opt/llvm/bin/clangd`), deliberately not
+symlink-resolved, so the recorded path survives package upgrades. If a
+later `init` run finds the situation changed (an official plugin appeared
+upstream, or the PATH issue is gone), the local plugin is retired in favor
+of the upstream one.
 
 ### path_resolve_method
 

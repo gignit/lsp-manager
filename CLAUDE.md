@@ -19,13 +19,13 @@ lsp-manager init [--dry-run] [-y|--yes] [--no-sudo] \
                  [--all | --pack NAME | --plugins id1,id2,...]
 lsp-manager list [--enabled | --disabled | --failed]
 lsp-manager status
-lsp-manager doctor
+lsp-manager doctor [--fix]
 ```
 
 - `init` -- installs missing binaries then configures Claude Code plugins and the navigation rule. With no selection flag, installs the `standard` pack (see `packs.yaml`).
 - `list` -- unified view of every known plugin: server definitions, installed plugins, and marketplace availability merged into a single output. Filters by enabled/disabled/failed state.
 - `status` -- quick binary availability check for current project
-- `doctor` -- health check: binaries, plugins, and rules
+- `doctor` -- health check: binaries, plugins, and rules. With `--fix`, surgically cleans up artifacts created by older lsp-manager versions (legacy local plugins superseded by upstream ones, old-generation files, pre-release hooks). Never deletes anything it cannot prove lsp-manager created.
 
 ## How It Works
 
